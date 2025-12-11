@@ -6,7 +6,8 @@ import asyncio
 import calendar
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -29,15 +30,24 @@ RSS_REQUEST_HEADERS = {
     "Accept": "application/rss+xml, application/atom+xml;q=0.9, application/xml;q=0.8, */*;q=0.7",
 }
 
+PROCEEDINGS_FEEDS = [
+    {"provider": "neurips", "url": "https://papers.nips.cc/paper_files/paper/2024/rss"},
+    {"provider": "iclr", "url": "https://iclr.cc/virtual/2025/overview/rss"},
+    {"provider": "icml", "url": "https://proceedings.mlr.press/rss.xml"},
+]
+
 async def fetch_context_items(query: str, limit: int = 8) -> List[ContextItem]:
     """
-    Aggregate context snippets from news, arXiv, GitHub, and RSS feeds.
+    Aggregate context snippets from news, arXiv, GitHub, scholarly APIs, and RSS feeds.
     """
     tasks = [
         fetch_news_articles(query, max_results=min(4, limit)),
         fetch_arxiv_papers(query, max_results=3),
         fetch_github_releases(query, max_repos=2),
         fetch_rss_articles(query, max_articles=3),
+        fetch_semantic_scholar_papers(query, max_results=3),
+        fetch_crossref_works(query, max_results=3),
+        fetch_conference_proceedings(max_items=3),
     ]
 
     chunks = await asyncio.gather(*tasks, return_exceptions=True)
@@ -149,6 +159,110 @@ async def fetch_arxiv_papers(
         return []
 
     return _parse_arxiv_feed(feed_xml)
+
+
+async def fetch_semantic_scholar_papers(
+    query: str,
+    max_results: int = 3,
+    max_age_days: int = 365,
+) -> List[ContextItem]:
+    """Search Semantic Scholar for recent Computer Science papers."""
+    if not query:
+        return []
+
+    params = {
+        "query": query,
+        "fieldsOfStudy": "Computer Science",
+        "sort": "publicationDate:desc",
+        "limit": max_results * 2,
+        "offset": 0,
+        "fields": "title,abstract,url,venue,publicationDate,year,authors",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                params=params,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"Semantic Scholar retrieval failed: {exc}")
+        return []
+
+    return _parse_semantic_scholar_payload(payload, max_results, max_age_days)
+
+
+async def fetch_crossref_works(
+    query: str,
+    max_results: int = 3,
+    max_age_days: int = 365,
+) -> List[ContextItem]:
+    """Fetch recent works metadata from Crossref."""
+    if not query:
+        return []
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).date()
+    params = {
+        "query": query,
+        "filter": f"from-pub-date:{cutoff.isoformat()}",
+        "sort": "published",
+        "order": "desc",
+        "rows": max_results * 2,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("https://api.crossref.org/works", params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"Crossref retrieval failed: {exc}")
+        return []
+
+    return _parse_crossref_payload(payload, max_results, max_age_days)
+
+
+async def fetch_conference_proceedings(
+    max_items: int = 3,
+    max_age_days: int = 365,
+) -> List[ContextItem]:
+    """Fetch the latest NeurIPS/ICLR/ICML proceedings via RSS/JSON endpoints."""
+    if not PROCEEDINGS_FEEDS:
+        return []
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        fetch_tasks = [
+            client.get(feed["url"], headers=RSS_REQUEST_HEADERS)
+            for feed in PROCEEDINGS_FEEDS
+        ]
+        responses = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    items: List[ContextItem] = []
+    for feed_meta, resp in zip(PROCEEDINGS_FEEDS, responses):
+        if isinstance(resp, Exception):
+            print(f"Proceedings fetch failed for {feed_meta['provider']}: {resp}")
+            continue
+
+        try:
+            parsed_items = _parse_proceedings_feed(
+                resp.content,
+                feed_meta["url"],
+                feed_meta["provider"],
+                max_age_days,
+            )
+            items.extend(parsed_items)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Proceedings parse failed for {feed_meta['provider']}: {exc}")
+            continue
+
+    sorted_items = sorted(
+        items,
+        key=lambda x: _parse_datetime(x.get("published_at")),
+        reverse=True,
+    )
+    return sorted_items[:max_items]
 
 
 async def fetch_github_releases(
@@ -303,6 +417,127 @@ def _parse_arxiv_feed(feed_xml: str) -> List[ContextItem]:
     return results
 
 
+def _parse_semantic_scholar_payload(
+    payload: Dict[str, Any], max_results: int, max_age_days: int
+) -> List[ContextItem]:
+    results: List[ContextItem] = []
+    now = datetime.now(timezone.utc)
+    for paper in payload.get("data") or []:
+        raw_date = paper.get("publicationDate") or paper.get("year")
+        published_dt = _coerce_datetime(raw_date)
+        if published_dt and published_dt < now - timedelta(days=max_age_days):
+            continue
+
+        published_at = _format_timestamp(
+            published_dt.isoformat() if published_dt else None
+        )
+        authors = [
+            author.get("name")
+            for author in paper.get("authors") or []
+            if isinstance(author, dict) and author.get("name")
+        ]
+
+        results.append(
+            _build_context_item(
+                provider="semantic_scholar",
+                source=paper.get("venue") or "Semantic Scholar",
+                title=paper.get("title"),
+                summary=paper.get("abstract"),
+                url=paper.get("url"),
+                published_at=published_at,
+                content=paper.get("abstract"),
+                extra={"authors": authors} if authors else None,
+            )
+        )
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def _parse_crossref_payload(
+    payload: Dict[str, Any], max_results: int, max_age_days: int
+) -> List[ContextItem]:
+    results: List[ContextItem] = []
+    now = datetime.now(timezone.utc)
+    items = payload.get("message", {}).get("items") or []
+    for item in items:
+        published_dt = _extract_crossref_date(item)
+        if published_dt and published_dt < now - timedelta(days=max_age_days):
+            continue
+
+        published_at = _format_timestamp(
+            published_dt.isoformat() if published_dt else None
+        )
+        title = item.get("title", [])
+        title_text = title[0] if title else None
+        summary = _strip_html(item.get("abstract")) if item.get("abstract") else ""
+        container_titles = item.get("container-title") or []
+
+        results.append(
+            _build_context_item(
+                provider="crossref",
+                source=container_titles[0] if container_titles else "Crossref",
+                title=title_text,
+                summary=summary,
+                url=item.get("URL"),
+                published_at=published_at,
+                content=summary,
+                extra={"doi": item.get("DOI")},
+            )
+        )
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def _parse_proceedings_feed(
+    feed_bytes: bytes, feed_url: str, provider: str, max_age_days: int
+) -> List[ContextItem]:
+    parsed = feedparser.parse(feed_bytes)
+    if getattr(parsed, "bozo", False):
+        exc = getattr(parsed, "bozo_exception", None)
+        if exc and not getattr(parsed, "entries", None):
+            raise ValueError(f"{exc}")
+        if exc:
+            print(
+                f"Proceedings feed had parsing issues but will proceed for {feed_url}: {exc}"
+            )
+
+    feed_title = (parsed.feed.get("title") if parsed.feed else None) or provider.upper()
+    results: List[ContextItem] = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+    for entry in parsed.entries or []:
+        title = entry.get("title") or "Untitled"
+        summary = entry.get("summary") or ""
+        link = entry.get("link")
+        published = (
+            entry.get("published")
+            or entry.get("updated")
+            or _struct_time_to_iso(entry.get("published_parsed"))
+            or _struct_time_to_iso(entry.get("updated_parsed"))
+        )
+        published_dt = _coerce_datetime(published)
+        if published_dt and published_dt < cutoff:
+            continue
+
+        results.append(
+            _build_context_item(
+                provider=provider,
+                source=feed_title,
+                title=title,
+                summary=_strip_html(summary),
+                url=link,
+                published_at=_format_timestamp(published),
+                content=_strip_html(summary),
+            )
+        )
+
+    return results
+
+
 def _parse_rss_feed(feed_bytes: bytes, feed_url: str) -> List[ContextItem]:
     parsed = feedparser.parse(feed_bytes)
     if getattr(parsed, "bozo", False):
@@ -412,6 +647,51 @@ def _parse_datetime(timestamp: Optional[str]) -> datetime:
         return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except Exception:
         return datetime.min
+
+
+def _coerce_datetime(raw: Optional[Any]) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+
+    candidates = [str(raw), f"{raw}-01-01"] if isinstance(raw, int) else [str(raw)]
+    for candidate in candidates:
+        try:
+            return datetime.fromisoformat(candidate.replace("Z", "+00:00")).astimezone(
+                timezone.utc
+            )
+        except Exception:
+            continue
+
+    try:
+        return datetime.strptime(str(raw), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        try:
+            return parsedate_to_datetime(str(raw)).astimezone(timezone.utc)
+        except Exception:
+            return None
+
+
+def _extract_crossref_date(item: Dict[str, Any]) -> Optional[datetime]:
+    for key in ("published-online", "published-print", "issued", "created"):
+        date_info = item.get(key)
+        if not isinstance(date_info, dict):
+            continue
+        parts = date_info.get("date-parts")
+        if not parts or not isinstance(parts, list):
+            continue
+        part = parts[0]
+        if not part:
+            continue
+        year = part[0]
+        month = part[1] if len(part) > 1 else 1
+        day = part[2] if len(part) > 2 else 1
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except Exception:
+            continue
+    return None
 
 
 def _safe_get(data: Dict[str, Any], *keys: str) -> Any:
