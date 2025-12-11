@@ -107,6 +107,12 @@ function App() {
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage1 = event.data;
               lastMsg.loading.stage1 = false;
+              if (event.metadata) {
+                lastMsg.metadata = {
+                  ...(lastMsg.metadata || {}),
+                  ...event.metadata,
+                };
+              }
               return { ...prev, messages };
             });
             break;
@@ -125,7 +131,10 @@ function App() {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage2 = event.data;
-              lastMsg.metadata = event.metadata;
+               lastMsg.metadata = {
+                 ...(lastMsg.metadata || {}),
+                 ...event.metadata,
+               };
               lastMsg.loading.stage2 = false;
               return { ...prev, messages };
             });

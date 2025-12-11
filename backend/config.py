@@ -1,6 +1,7 @@
 """Configuration for the LLM Council."""
 
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,3 +25,26 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Data directory for conversation storage
 DATA_DIR = "data/conversations"
+
+# External news retrieval configuration
+NEWSAPI_KEY = "43418ecd27254838878dab5887155323"
+NEWSAPI_BASE_URL = "https://newsapi.org/v2"
+
+# Scholarly + technical retrieval configuration
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+
+# GitHub releases (token optional but improves rate limits)
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_API_URL = "https://api.github.com"
+
+# Company/industry RSS feeds (comma-separated env override)
+_default_feeds = [
+    "https://openai.com/blog/rss/",
+    "https://deepmind.google/discover/rss.xml",
+    "https://huggingface.co/blog/feed",
+]
+TECH_RSS_FEEDS = [
+    feed.strip()
+    for feed in os.getenv("TECH_RSS_FEEDS", ",".join(_default_feeds)).split(",")
+    if feed.strip()
+]
