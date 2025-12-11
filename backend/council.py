@@ -45,7 +45,10 @@ def _build_stage1_messages(
     system_prompt = (
         "You are a council member responding to a question. "
         "Incorporate any provided external context and cite it inline as "
-        "[Source #n]. If no context is relevant, say so."
+        "[Source #n]. If no context is relevant, say so. "
+        "You have up-to-date snippets supplied in the prompt, so do not claim "
+        "you have a knowledge cutoff or lack browsing; if the provided "
+        "context is insufficient, explain that limitation directly."
     )
 
     if not context_items:
