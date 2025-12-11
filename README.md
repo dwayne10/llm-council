@@ -81,3 +81,13 @@ Then open http://localhost:5173 in your browser.
 - **Frontend:** React + Vite, react-markdown for rendering
 - **Storage:** JSON files in `data/conversations/`
 - **Package Management:** uv for Python, npm for JavaScript
+
+## Real-time context sources
+
+The council enriches prompts with recent material pulled from multiple providers:
+
+- **News:** General tech/business news via NewsAPI.
+- **Scholarly papers:** arXiv, Semantic Scholar (Computer Science focus), and Crossref works.
+- **Releases:** GitHub repository release metadata.
+- **Blogs/updates:** Configurable RSS feeds from leading AI labs.
+- **Proceedings:** Conference feeds for NeurIPS, ICLR, and ICML proceedings.
