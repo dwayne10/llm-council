@@ -1,7 +1,9 @@
 """OpenRouter API client for making LLM requests."""
 
+from typing import Any, Dict, List, Optional
+
 import httpx
-from typing import List, Dict, Any, Optional
+
 from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 
 

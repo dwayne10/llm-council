@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Tuple
 
 from .config import CHAIRMAN_MODEL, COUNCIL_MODELS
+from .deep_research import perform_deep_research
 from .openrouter import query_model, query_models_parallel
 from .retrieval import fetch_context_items
 
@@ -22,8 +23,26 @@ async def stage1_collect_responses(
     context_items = await fetch_context_items(user_query)
     messages = _build_stage1_messages(user_query, context_items)
 
-    # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    # Separate standard models from special agents
+    standard_models = [m for m in COUNCIL_MODELS if not m.startswith("special/")]
+    special_models = [m for m in COUNCIL_MODELS if m.startswith("special/")]
+
+    # Query standard models in parallel
+    responses = await query_models_parallel(standard_models, messages)
+
+    # Handle special agents
+    for model in special_models:
+        if model == "special/deep-researcher":
+            try:
+                # Deep researcher needs the raw query, not the chat messages
+                research_result = await perform_deep_research(user_query)
+                responses[model] = {"content": research_result["answer"]}
+                
+                # Optionally, we could merge the deep research context into the main context items
+                # but for now let's keep it simple. The answer already contains citations.
+            except Exception as e:
+                print(f"Deep research failed: {e}")
+                responses[model] = None
 
     # Format results
     stage1_results = []
