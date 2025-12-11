@@ -1,0 +1,38 @@
+Task List for Upgrading Council + Retrieval
+
+Design Retrieval Strategy Mix
+
+Define priority sources beyond news: arXiv (per /lukasschwab/arxiv.py docs), Semantic Scholar, vendor blogs, internal repos, etc.
+Decide freshness horizons per source (daily for news/blogs, weekly for arXiv) and map each to retrieval method (API, RSS, scraping).
+Build Retrieval Adapters
+
+Implement async adapters for each source (e.g., arXiv API wrapper for “state of the art AI/ML” queries, company blog RSS fetcher, GitHub release notes).
+Normalize outputs to {source, published_at, title, summary, url, content} so council prompts can cite uniformly.
+Add Vector Index + Long-Term Memory
+
+Stand up an embedding pipeline and vector store (FAISS, pgvector, etc.) that ingests fetched articles/papers for re-use.
+Provide retriever that blends keyword API hits with semantic similarity over cached corpus.
+Implement Retrieval Orchestrator
+
+Create a routing layer that selects adapters based on query intent (e.g., “LLM benchmarks” hits arXiv + vendor blogs, “product release” hits news).
+Support weighted merging/deduplication plus knob for number of passages per source.
+Enhance Stage 1 Prompting
+
+Expand prompt to differentiate between “research-grade papers” vs “news summaries,” instructing models to cite with [Source #n] + reference type.
+Include guardrails for conflicting info: ask models to note disagreements across sources.
+Council Composition Review
+
+Evaluate models that excel at long-context technical reasoning (e.g., DeepSeek, Claude Research). Adjust COUNCIL_MODELS accordingly.
+Consider specialist roles (code-focused model, math-heavy model) and weight their votes differently in Stage 2.
+Metadata & Frontend Surfacing
+
+Persist full context objects per message and expose filters in Stage 1 tabs (e.g., toggle “Only papers”).
+Add UI affordances to expand abstracts, download PDFs, or link to original repositories.
+** Quality + Safety Checks**
+
+Add automated evals: compare synthesized answer vs. retrieved sources for hallucination detection.
+Log retrieval coverage (which adapters fired) per request for debugging.
+Operational Considerations
+
+Implement caching + rate-limit handling for scholarly APIs.
+Add background jobs to refresh vector index nightly so Stage 1 doesn’t hit APIs every time for popular topics.
